@@ -13,22 +13,26 @@ jobs:
     steps:
     - name: Dọn dẹp bộ nhớ đệm
       run: |
+        # Giải phóng dung lượng ổ cứng của máy ảo để chứa đủ mã nguồn AOSP
         sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
 
-    - name: Cài đặt môi trường
-      # Bước này dùng apt-get để cài đặt các trình biên dịch và thư viện lõi.
-      # Không áp dụng được depth=1, nhưng máy chủ GitHub tải nội bộ rất nhanh (thường dưới 1 phút).
+    - name: Cài đặt môi trường tối giản
       run: |
         sudo apt-get update
-        sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential \
-                zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 \
-                libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make \
-                optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom \
-                libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 x11proto-core-dev \
-                libx11-dev libgl1-mesa-dev xsltproc unzip libncurses-dev lib32z1-dev
+        # Lược bỏ các thư viện build ROM khổng lồ.
+        # Chỉ cài đặt các công cụ host cơ bản để chạy Makefile và script của kernel.
+        sudo apt-get install -y git build-essential bc bison flex libssl-dev rsync ccache
+
+    - name: Thiết lập Ccache để tăng tốc lần build sau
+      # Cache lại các object file đã compile. Lần chạy sau nếu code không đổi, quá trình build sẽ cực nhanh.
+      uses: actions/cache@v4
+      with:
+        path: ~/.ccache
+        key: ${{ runner.os }}-kernel-ccache-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-kernel-ccache-
 
     - name: Cài đặt Repo
-      # Tải công cụ quản lý mã nguồn của Google trực tiếp bằng lệnh curl (chỉ tải 1 file duy nhất).
       run: |
         mkdir -p ~/bin
         curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
@@ -40,48 +44,38 @@ jobs:
         git config --global user.name "GitHub Action"
         git config --global user.email "action@github.com"
 
-    - name: Tải mã nguồn Kernel
-      # Đây là nơi depth=1 phát huy tác dụng lớn nhất.
-      # Thay vì tải hàng chục GB lịch sử thay đổi của kernel qua nhiều năm, 
-      # --depth=1 chỉ tải trạng thái code của commit cuối cùng (giảm dung lượng xuống mức tối thiểu).
+    - name: Tải mã nguồn Kernel và kiểm tra dung lượng
       run: |
         mkdir kernel-workspace
         cd kernel-workspace
-        repo init -u https://android.googlesource.com/kernel/manifest -b android-msm-coral-4.14-android10-qpr3 --depth=1
         
-        # -c: Chỉ tải đúng nhánh hiện tại.
-        # --no-tags: Bỏ qua việc tải các tag đánh dấu phiên bản (không cần thiết khi build).
-        # --no-clone-bundle: Ép tải file gốc thay vì các cục nén lịch sử của Google.
+        # Thiết lập shallow clone để tải code nhánh android10-qpr3
+        repo init -u https://android.googlesource.com/kernel/manifest -b android-msm-coral-4.14-android10-qpr3 --depth=1
         repo sync -c --no-tags --no-clone-bundle -j$(nproc)
+        
+        # Hiển thị tổng dung lượng của toàn bộ repo sau khi tải xong theo yêu cầu của huynh
+        echo "=== TỔNG DUNG LƯỢNG MÃ NGUỒN ==="
+        du -sh .
+        echo "================================="
 
     - name: Biên dịch Kernel
       run: |
-            cd kernel-workspace
-            
-            # Tự động tìm kiếm file cấu hình có tên build.config.floral hoặc build.config.coral 
-            # trong toàn bộ thư mục làm việc, lấy kết quả đầu tiên tìm được.
-            CONFIG_PATH=$(find . -type f \( -name "build.config.floral" -o -name "build.config.coral" \) | head -n 1)
-            
-            # Nếu biến CONFIG_PATH rỗng (không tìm thấy file)
-            if [ -z "$CONFIG_PATH" ]; then
-              echo "Lỗi: Không tìm thấy file cấu hình build.config cho thiết bị!"
-              echo "Cấu trúc thư mục hiện tại để debug:"
-              ls -la
-              # Lệnh exit 1 để báo lỗi và dừng workflow ngay lập tức
-              exit 1
-            fi
-            
-            # Lệnh find thường trả về đường dẫn có dạng "./thu_muc/file".
-            # Ta cắt bỏ chuỗi "./" ở đầu để biến môi trường BUILD_CONFIG chuẩn xác nhất.
-            CONFIG_PATH=${CONFIG_PATH#./}
-            
-            echo "Đã tìm thấy cấu hình tại: $CONFIG_PATH"
-            
-            # Gán biến môi trường và chạy script build
-            BUILD_CONFIG=$CONFIG_PATH build/build.sh
+        cd kernel-workspace
+        
+        # Bật ccache cho script build của Google để tiết kiệm thời gian
+        export USE_CCACHE=1
+        export CCACHE_EXEC=/usr/bin/ccache
+        ccache -M 5G # Giới hạn dung lượng ccache tối đa là 5GB
+        
+        # Chạy lệnh build. Lệnh sẽ tự tìm file build.config mặc định ở thư mục gốc.
+        build/build.sh
+        
+        # Hiển thị hiệu quả của ccache sau khi build xong
+        ccache -s
 
     - name: Upload Kernel Artifact
       uses: actions/upload-artifact@v4
       with:
         name: Pixel4-Stock-Kernel
+        # Tải file kernel thành phẩm lên GitHub để huynh tải về
         path: kernel-workspace/out/android-msm-pixel-4.14/dist/Image.lz4
