@@ -11,10 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Dọn dẹp bộ nhớ đệm
-      run: |
-        # Giải phóng dung lượng ổ cứng của máy ảo để chứa đủ mã nguồn AOSP
-        sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+    # - name: Dọn dẹp bộ nhớ đệm
+    #   run: |
+    #     # Giải phóng dung lượng ổ cứng của máy ảo để chứa đủ mã nguồn AOSP
+    #     sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
 
     - name: Cài đặt môi trường tối giản
       run: |
