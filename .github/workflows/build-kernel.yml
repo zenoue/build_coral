@@ -1,0 +1,80 @@
+# Tên của tiến trình build sẽ hiển thị trên GitHub
+name: Build Pixel 4 Kernel (Coral)
+
+# Định nghĩa khi nào tiến trình này được chạy
+on:
+  push:
+    branches:
+      - main
+  # Bật tùy chọn này để huynh có thể nhấn nút "Run workflow" bằng tay trên giao diện GitHub Actions
+  workflow_dispatch:
+
+jobs:
+  build-kernel:
+    # Sử dụng máy ảo Ubuntu mới nhất do GitHub cung cấp
+    runs-on: ubuntu-latest
+
+    steps:
+    # Bước 1: Dọn dẹp không gian đĩa (Runner GitHub đôi khi không đủ dung lượng cho repo Android)
+    - name: Dọn dẹp bộ nhớ đệm
+      run: |
+        sudo rm -rf /usr/share/dotnet
+        sudo rm -rf /opt/ghc
+        sudo rm -rf "/usr/local/share/boost"
+        sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+
+    # Bước 2: Cài đặt các thư viện cần thiết để biên dịch kernel Linux/Android
+    - name: Cài đặt môi trường
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev liblz4-tool make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 lib32ncurses5-dev x11proto-core-dev libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip
+
+    # Bước 3: Tải và thiết lập công cụ repo của Google
+    - name: Cài đặt Repo
+      run: |
+        mkdir -p ~/bin
+        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
+        chmod a+rx ~/bin/repo
+        # Đưa repo vào biến môi trường PATH của GitHub Action
+        echo "~/bin" >> $GITHUB_PATH
+
+    # Bước 4: Cấu hình danh tính Git cơ bản để công cụ repo không báo lỗi
+    - name: Cấu hình Git
+      run: |
+        git config --global user.name "GitHub Action"
+        git config --global user.email "action@github.com"
+
+    # Bước 5: Thực thi các lệnh lấy mã nguồn Pixel 4 tối ưu dung lượng (depth=1) như muội đã tư vấn trước đó
+    - name: Tải mã nguồn Kernel
+      run: |
+        mkdir kernel-workspace
+        cd kernel-workspace
+        repo init -u https://android.googlesource.com/kernel/manifest -b android-msm-coral-4.14-android10-qpr3 --depth=1
+        repo sync -c --no-tags --no-clone-bundle -j$(nproc)
+
+    # Bước 6: (Tùy chọn) Chèn KernelSU Next vào mã nguồn kernel trước khi build
+    - name: Tích hợp KernelSU Next
+      run: |
+        cd kernel-workspace
+        # Di chuyển vào thư mục mã nguồn kernel chính của Pixel 4
+        cd private/msm-google
+        # Chạy script cài đặt tự động của KernelSU Next
+        curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/next/kernel/setup.sh" | bash -
+        # Ở đây huynh có thể thêm các lệnh patch manual bằng Coccinelle nếu script tự động bị lỗi
+
+    # Bước 7: Bắt đầu tiến trình biên dịch
+    - name: Biên dịch Kernel
+      run: |
+        cd kernel-workspace
+        # Google build script cần biết cấu hình thiết bị. Với Pixel 4, file cấu hình thường là floral.
+        # Lệnh này gọi script build chuẩn của AOSP.
+        BUILD_CONFIG=private/msm-google/build.config.floral build/build.sh
+
+    # Bước 8: Đóng gói và xuất file thành phẩm (Artifact) để huynh tải về qua trình duyệt
+    - name: Upload Kernel Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: Pixel4-KernelSU-Next
+        # Đường dẫn nơi chứa file kernel đầu ra. Khi build xong, file thường nằm trong thư mục out/ hoặc out/.../dist/
+        # Đuôi file có thể là Image.lz4, Image.gz-dtb hoặc boot.img tùy cấu hình build
+        path: kernel-workspace/out/android-msm-pixel-4.14/dist/Image.lz4
